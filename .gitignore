@@ -1,0 +1,11 @@
+# Python 캐시 파일
+__pycache__/
+*.pyc
+
+# 모델 파일
+gemma2-2b-GGUF/gemma-2-2b-it-IQ4_XS.gguf
+
+# 기타 파일
+.DS_Store
+*.log
+
