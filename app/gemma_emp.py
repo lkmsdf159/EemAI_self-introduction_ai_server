@@ -5,18 +5,16 @@ from langchain_core.prompts import PromptTemplate
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 import numpy as np
-import logging
+import asyncio
 import torch 
 import json
 import os
-import asyncio
 import re
 
 ollama_semaphore = asyncio.Semaphore(10)
 
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 
-logger = logging.getLogger(__name__)
 
 
 
@@ -53,7 +51,6 @@ class EmbeddingProcessor:
     def _init_model(self):
         """모델과 토크나이저를 초기화합니다."""
         if self._model is None:
-            logger.info("모델 초기화 시작")
             try:
                 model_name = "BM-K/KoSimCSE-roberta"  # 사용할 모델 이름
                 self._model = AutoModel.from_pretrained(model_name)
@@ -64,9 +61,7 @@ class EmbeddingProcessor:
                     self._model = self._model.cuda()
                     self._model = torch.nn.DataParallel(self._model)
                     self._model.eval()
-                logger.info("모델 로드 완료")
             except Exception as e:
-                logger.error(f"모델 초기화 중 에러: {str(e)}")
                 raise
 
     def get_embedding(self, text: str) -> np.ndarray:
@@ -119,7 +114,6 @@ class EmbeddingProcessor:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         EmbeddingProcessor._instance = None  # 이 부분 추가
-        logger.info("모델 및 GPU 캐시 정리 완료")
 
 
 
@@ -185,8 +179,6 @@ class EnhancedJSONParser:
             return result
             
         except Exception as e:
-            logger.error(f"JSON 파싱 오류: {str(e)}")
-            logger.error(f"문제의 텍스트: {text}")
             return None
 
 
@@ -207,7 +199,7 @@ class EnhancedJSONParser:
 def load_reference_data(file_path: str) -> List[Dict[str, Any]]:
     """CSV 파일에서 참조 데이터 로드"""
     try:
-        logger.info(f"CSV 파일 로드 시작: {file_path}")
+
         
         loader = CSVLoader(
             file_path,
@@ -219,7 +211,6 @@ def load_reference_data(file_path: str) -> List[Dict[str, Any]]:
             }
         )
         data = loader.load()
-        logger.info(f"CSV 로더가 읽은 데이터 수: {len(data)}")
 
         reference_data = []
         for doc in data:
@@ -245,7 +236,7 @@ def load_reference_data(file_path: str) -> List[Dict[str, Any]]:
                     })
 
             except Exception as e:
-                logger.error(f"행 파싱 중 오류: {str(e)}")
+
                 continue
         if reference_data:
             logger.debug(f"첫 번째 데이터 샘플:{json.dumps(reference_data[0], ensure_ascii=False)}")
@@ -324,7 +315,7 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
 - 단순 비판이 아닌 구체적인 개선 방향 제시
 - 전문적이고 객관적인 tone 유지
 - 맞춤법 피드백은 철자, 문장 구조의 기술적 측면에만 집중
-- 합격자의 자기소개서를 보고 평가대상의 자기소개서를 구체화시킬것
+- 합격자의 자기소개서를 보고 평가대상의 자기소개서를 구체``화시킬것
 - You must answer in korean"""
 )
 

@@ -26,9 +26,6 @@ logger = logging.getLogger(__name__)
 
 @app.middleware("http")
 async def log_middleware(request: Request, call_next):
-    logger.info(f"=== 새로운 요청 ===")
-    logger.info(f"요청 URL: {request.url}")
-    logger.info(f"요청 메소드: {request.method}")
     
     try:
         body = await request.body()
@@ -38,8 +35,6 @@ async def log_middleware(request: Request, call_next):
         logger.error(f"본문 읽기 오류: {e}")
     
     response = await call_next(request)
-    
-    logger.info(f"응답 상태 코드: {response.status_code}")
     return response
 
 
@@ -73,15 +68,11 @@ async def process_emp_requests(request: Request):
         # 파일명 생성 및 sanitize
         filename = sanitize_filename(job_code)
         filepath = os.path.join("/mnt/e/Linkareer_embedding_data/", f"{filename}.csv")
-        logger.info(f"참조 데이터 파일 경로: {filepath}")
         reference_data = load_reference_data(filepath)
-        logger.info(f"로드된 참조 데이터 수: {len(reference_data)}")
 
         data = await request.json()
         answers_list = data.get("data", [])
         results = []
-        
-        logger.info(f"요청 받음: {len(answers_list)}개의 답변")
         
         for answer in answers_list:
             try:
@@ -90,7 +81,6 @@ async def process_emp_requests(request: Request):
                 
                 # 답변 길이 체크
                 if len(text.strip()) < 100:
-                    logger.warning(f"답변 길이 부족: {len(text.strip())}자")
                     results.append({
                         "relevance": 0,
                         "specificity": 0,
@@ -106,12 +96,10 @@ async def process_emp_requests(request: Request):
                     job_code : job_code
                 }
                 
-                logger.debug(f"처리할 데이터: {formatted_answer}")
                 result = await process_gemma_answer(formatted_answer, job_code, reference_data)
                 results.append(result)
                 
             except Exception as e:
-                logger.error(f"답변 처리 중 오류: {str(e)}")
                 results.append({
                     "relevance": 5,
                     "specificity": 5,
@@ -120,11 +108,9 @@ async def process_emp_requests(request: Request):
                 })
         
         response = {"results": results}
-        logger.info(f"응답 상태 코드: 200")
         return response
         
     except Exception as e:
-        logger.error(f"요청 처리 중 오류: {str(e)}")
         return {"error": "요청 처리 중 오류가 발생했습니다"}
     
     finally:
