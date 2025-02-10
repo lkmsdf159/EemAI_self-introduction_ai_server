@@ -5,6 +5,7 @@ from langchain_core.prompts import PromptTemplate
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 import numpy as np
+import logging
 import asyncio
 import torch 
 import json
@@ -15,6 +16,7 @@ ollama_semaphore = asyncio.Semaphore(10)
 
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 
+logger = logging.getLogger(__name__)
 
 
 
@@ -52,7 +54,9 @@ class EmbeddingProcessor:
         """모델과 토크나이저를 초기화합니다."""
         if self._model is None:
             try:
+                logger.info("임베딩 모델 초기화 시작")
                 model_name = "BM-K/KoSimCSE-roberta"  # 사용할 모델 이름
+                logger.info(f"사용할 모델: {model_name}")
                 self._model = AutoModel.from_pretrained(model_name)
                 self._tokenizer = AutoTokenizer.from_pretrained(model_name)
                 self._cache = {}
@@ -62,9 +66,11 @@ class EmbeddingProcessor:
                     self._model = torch.nn.DataParallel(self._model)
                     self._model.eval()
             except Exception as e:
+                logger.error(f"모델 초기화 중 에러: {str(e)}")
                 raise
 
     def get_embedding(self, text: str) -> np.ndarray:
+        logger.debug(f"텍스트 임베딩 시작 (길이: {len(text)})")
         if not hasattr(self, '_cache'):  
             self._cache = {}
         """입력 텍스트에 대한 임베딩을 반환합니다."""
@@ -118,6 +124,13 @@ class EmbeddingProcessor:
 
 
 
+#- 10점: {job_code} 직군의 핵심 역량/경험이 잘 드러나며, 질문 의도를 정확히 파악하여 추가 인사이트까지 제공
+#- 8-9점: {job_code} 관련 내용이 대부분이며 질문의 핵심 요소를 포함하나, 일부 심화 내용 부족
+#- 6-7점: {job_code} 관련 내용이 있으나 직무 연관성이 다소 부족하고 질문 의도를 부분적으로만 이해
+#- 3-5점: {job_code} 관련 내용이 매우 적고 다른 직무 경험 위주로 서술됨
+#- 1-2점: {job_code}와 전혀 무관한 다른 직군의 경험만을 서술하거나 질문 의도를 전혀 파악하지 못함
+
+
     
 
 
@@ -138,8 +151,16 @@ class EnhancedJSONParser:
                 text = text.replace('**', ' ')
                 text = text.replace('*', ' ')
                 text = text.replace('\\"', '"')
-                text = text.replace('\\\\', ' ')  # 추가: 이중 백슬래시 처리
+                text = text.replace('\\\\', ' ')  
                 text = text.replace('<br> - ', ' ')
+                text = text.replace(':', ' ')                
+                text = text.replace('Relevance:', ' ')
+                text = text.replace('Persuasiveness:', ' ')
+                text = text.replace('Specificity:', ' ')
+                text = text.replace('Relevance', ' ')
+                text = text.replace('Persuasiveness', ' ')
+                text = text.replace('Specificity', ' ')     
+                text = text.replace('n n 참고 사례 :', ' ')                             
                 text = ' '.join(text.split())
                 return text
 
@@ -236,7 +257,6 @@ def load_reference_data(file_path: str) -> List[Dict[str, Any]]:
                     })
 
             except Exception as e:
-
                 continue
         if reference_data:
             logger.debug(f"첫 번째 데이터 샘플:{json.dumps(reference_data[0], ensure_ascii=False)}")
@@ -244,18 +264,17 @@ def load_reference_data(file_path: str) -> List[Dict[str, Any]]:
         return reference_data
 
     except Exception as e:
-        logger.error(f"참조 데이터 로드 중 오류: {str(e)}")
-        logger.exception("상세 오류:")
         return []
 
 
 async def process_answer(answer: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        logger.info("=== 1차 평가 시작 ===")
-        
+        logger.info(f"답변 처리 시작 - 직무코드: {answer.get('job_code', 'Unknown')}") 
+        logger.debug(f"입력 답변 길이: {len(answer.get('text', ''))}")
+        logger.debug(f"질문 내용: {answer.get('question', '')[:100]}...")
         # Gemma 모델용 프롬프트 템플릿
         prompt = PromptTemplate.from_template("""[직무 맥락: {job_code}]
-당신은 {job_code} 직무에 대한 자기소개서만을 평가하는 자기소개 전문가입니다.
+당신은 {job_code} 직무에 대한 취업 자기소개서만을 평가하는 자기소개 전문가입니다.
 아래 평가 대상과 참고 사례비교 분석해서 평가대상 답변에 부족한점을 참고 사례의 예시를 들어서 출력은 꼭 feedback 영역 안에 다 출력해주세요. 
 
 [평가 대상]
@@ -265,57 +284,54 @@ async def process_answer(answer: Dict[str, Any]) -> Dict[str, Any]:
 [참고 사례]
 {similarity_context}
 
-상세 평가 기준:
-
-[세부 평가 지표]
-1. Relevance (연관성) - 직무 적합성 및 질문 이해도:
-- 10점: {job_code} 직군의 핵심 역량/경험이 잘 드러나며, 질문 의도를 정확히 파악하여 추가 인사이트까지 제공
-- 8-9점: {job_code} 관련 내용이 대부분이며 질문의 핵심 요소를 포함하나, 일부 심화 내용 부족
-- 6-7점: {job_code} 관련 내용이 있으나 직무 연관성이 다소 부족하고 질문 의도를 부분적으로만 이해
-- 4-5점: {job_code} 관련 내용이 매우 적고 다른 직무 경험 위주로 서술됨
-- 1-3점: {job_code}와 전혀 무관한 다른 직군의 경험만을 서술하거나 질문 의도를 전혀 파악하지 못함
-
-3. Specificity (구체성) - 경험과 실적의 구체화:
-- 10점: 모든 주장이 구체적 수치, 사례, 경험으로 뒷받침됨
-- 8-9점: 대부분의 주장이 구체적 증거로 뒷받침됨
-- 6-7점: 일부 구체적 사례가 있으나 부족
-- 4-5점: 대부분 추상적 설명에 그침
-- 1-3점: 구체적 내용이 전혀 없음 
-
-4. Persuasiveness (설득력) - 논리성과 차별성:
-- 10점: 명확한 인과관계, 독창적 관점, 강력한 동기부여가 모두 포함
-- 8-9점: 논리적 구성과 차별성이 있으나 일부 보완 필요
-- 6-7점: 기본적인 논리는 있으나 설득력이 부족
-- 4-5점: 주장과 근거의 연결이 미약
-- 1-3점: 논리적 흐름이 없음 
-
 [평가시 필수 고려사항]
 1. {job_code} 직군과 내용이 관계성이 있는지 판단
 2. 각 점수대별 명확한 근거 제시
-3. 참고 사례와의 구체적인 비교 분석
-4. 실천 가능한 개선 방향 제시 
+3. 참고 사례와의 구체적인 비교 분석 실천 가능한 개선 방향 제시 
+5. 각 점수는 유동적으로 판단해서 평가할 것.
 
+[세부 평가 지표]
+Relevance (연관성) - 직무 적합성 및 질문 이해도:
+9-10점: {job_code} 직군에서 요구하는 핵심 역량이 구체적인 성과/수치와 함께 명확히 드러나고, 질문이 요구하는 모든 요소에 충실히 답변하며, 해당 분야의 추가적인 인사이트나 개선방안까지 제시함
+7-8점: {job_code} 직군 관련 경험과 역량이 구체적 사례와 함께 잘 표현되어 있고, 질문의 모든 요소에 충실히 답변함
+5-6점: {job_code} 직군과 관련된 내용이 포함되어 있고 기본적인 답변 요소를 갖추었으나, 일부 구체성이나 깊이가 부족함
+3-4점: {job_code} 직군과의 연관성이 부족하거나 질문의 핵심 요소에 대한 답변이 미흡함
+1-2점: {job_code} 직군이나 질문 의도와 맞지 않는 내용으로 구성됨
+
+
+Specificity (구체성) - 경험과 실적의 구체화:
+9-10점: 핵심 경험과 주장이 명확한 수치와 구체적 사례로 체계적으로 뒷받침됨
+7-8점: 주요 내용이 구체적인 경험과 성과로 잘 설명되어 있음
+5-6점: 기본적인 사례와 근거는 있으나 일부 구체성 보완이 필요함
+3-4점: 구체적 사례나 근거 제시가 부족하고 일반적인 서술에 그침
+1-2점: 구체적 경험이나 근거 없이 추상적인 내용으로만 구성됨
+
+
+Persuasiveness (설득력) - 논리성과 차별성:
+9-10점: 명확한 인과관계와 차별화된 관점으로 본인의 역량과 가치를 설득력 있게 전달
+7-8점: 논리적 구성이 잘 되어있고 개인의 강점이 효과적으로 드러남
+5-6점: 기본적인 논리는 갖추었으나 차별성이나 설득력이 다소 부족함
+3-4점: 논리 전개가 미흡하거나 진부한 내용이 많음
+1-2점: 논리적 흐름이 불명확하고 설득력이 현저히 부족함
 
 합격자 자기소개서가 '없음'인 경우: 일반적인 자기소개서 작성 기준과 해당 질문의 의도에 맞춰 평가하고 피드백을 제시하세요.
-
-
 
 JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하지 마세요:
 {{
     "relevance": <점수>,
     "specificity": <점수>,
     "persuasiveness": <점수>,
-    "feedback": "<점수에 대한 구체적 근거, 건설적인 피드백 , 맞춤법 오류에 대한 피드백, 참고 사례 대비 부족한 점, 참고사례에서 참고할점 >"
+    "feedback": "참고 사례 대비 부족한 점, 참고사례에서 참고할점, 점수에 대한 구체적 근거, 건설적인 피드백 , 맞춤법 오류에 대한 피드백"
    
 }}
 
 주의사항:
 - 반드시 [평가 대상]에 대해서만 평가
 - 피드백은 점수와 완전히 일관되어야 함
-- 단순 비판이 아닌 구체적인 개선 방향 제시
-- 전문적이고 객관적인 tone 유지
-- 맞춤법 피드백은 철자, 문장 구조의 기술적 측면에만 집중
-- 합격자의 자기소개서를 보고 평가대상의 자기소개서를 구체``화시킬것
+- 단순 비판이 아닌 개선방향 제시
+- 전문적이고 객관적인 톤을 유지하며 점수 평가
+- 맞춤법 오류가 있으면 제시
+- 합격자의 자기소개서를 보고 평가대상의 자기소개서 개선점 제시
 - You must answer in korean"""
 )
 
@@ -338,31 +354,20 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
             "job_code":answer['job_code']
         }
         
-        logger.debug(f"모델 입력 데이터: {json.dumps(input_data, ensure_ascii=False)}")
         
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                logger.info(f"평가 시도 {attempt + 1}")
-                
-                response = await chain.ainvoke(input_data)
-                
-                logger.debug(f"원시 응답: {response}")
-                
+                logger.info(f"답변 생성 시도 {attempt + 1}/{max_attempts}")
+                response = await chain.ainvoke(input_data)           
 
-                result_text = response.content if hasattr(response, 'content') else str(response)
-                
-                logger.debug(f"응답 텍스트: {result_text}")
-                
+                result_text = response.content if hasattr(response, 'content') else str(response)               
 
                 result = EnhancedJSONParser.validate_and_parse(result_text)
                 
                 if result:
-                    logger.info(f"평가 성공: {result}")
-                    return result
-                
-                logger.warning(f"JSON 검증 실패 (시도 {attempt + 1})")
-                
+                    logger.info("답변 처리 성공")
+                    return result                
             except Exception as e:
                 logger.error(f"평가 처리 오류 (시도 {attempt + 1}): {str(e)}")
         
@@ -375,7 +380,6 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
         }
     
     except Exception as e:
-        logger.error(f"전체 프로세스 오류: {str(e)}")
         return {
             "relevance": 5,
             "specificity": 5,
@@ -386,6 +390,8 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
         
 
 async def find_similar_profile(question: str, text: str, reference_data: List[Dict[str, Any]], threshold: float = 80.0) -> tuple:
+   logger.info("유사 프로필 검색 시작")
+   logger.debug(f"참조 데이터 수: {len(reference_data)}") 
    processor = EmbeddingProcessor()
    
    question_embedding = processor.get_embedding(question)
@@ -393,7 +399,8 @@ async def find_similar_profile(question: str, text: str, reference_data: List[Di
    
    max_similarity = -1
    best_profile = None
-   
+
+   logger.info("유사도 비교 시작")
    for profile in reference_data:
        ref_q_embed = processor.get_embedding(profile['quest']) 
        ref_t_embed = processor.get_embedding(profile['text'])
@@ -414,24 +421,31 @@ async def find_similar_profile(question: str, text: str, reference_data: List[Di
        if combined_sim > max_similarity:
            max_similarity = combined_sim
            best_profile = profile
-   
+
+   logger.info(f"유사 프로필 검색 완료 (최고 유사도: {max_similarity:.2f})")
    return (best_profile, max_similarity) if max_similarity >= threshold else (None, 0.0)
 
 
 
 async def process_gemma_answer(answer: Dict[str, Any],  job_code: str, reference_data: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    logger.info(f"직무 코드 {job_code}에 대한 Gemma 답변 처리 시작")
+    logger.debug(f"입력 답변: {json.dumps(answer, ensure_ascii=False)[:200]}...")
     async with ollama_semaphore:
         try:
+            logger.info("유사 프로필 검색 중")
             profile, similarity = await find_similar_profile(
                 answer["question"], 
                 answer["text"], 
                 reference_data
             )
+
+            
             
             answer['similarity_context'] = profile['pass_answer'] if profile else "없음"
             answer['similar_profile'] = profile
             answer['job_code'] = job_code
             
+            logger.info("Gemma로 답변 처리 중")
             result = await process_answer(answer)
             
 
@@ -455,7 +469,6 @@ async def process_gemma_answer(answer: Dict[str, Any],  job_code: str, reference
             return result
         
         except Exception as e:
-            logger.error(f"처리 오류: {e}")
             return {
                 "relevance": 5,
                 "specificity": 5,

@@ -101,9 +101,9 @@ async def process_emp_requests(request: Request):
                 
             except Exception as e:
                 results.append({
-                    "relevance": 5,
-                    "specificity": 5,
-                    "persuasiveness": 5,
+                    "relevance": 0,
+                    "specificity": 0,
+                    "persuasiveness": 0,
                     "feedback": "평가를 완료할 수 없었습니다."
                 })
         
