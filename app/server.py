@@ -45,11 +45,8 @@ async def redirect_root_to_docs():
 
 def sanitize_filename(filename: str) -> str:
    import re
-   # 한글, 영문, 숫자를 제외한 모든 문자를 _로 변경
    sanitized = re.sub(r'[^\w\s가-힣]', '_', filename)
-   # 연속된 _를 하나로
    sanitized = re.sub(r'_+', '_', sanitized)
-   # 앞뒤 공백/언더스코어 제거
    sanitized = sanitized.strip('_')
    return sanitized
 
@@ -57,15 +54,15 @@ def sanitize_filename(filename: str) -> str:
 @app.post("/gemma")
 async def process_emp_requests(request: Request):
     try:
-        # 요청 데이터 파싱
+
         data = await request.json()
         
-        # jobtitle 추출 및 파일명 생성
+
         job_code = data.get("job_code")
         if not job_code:
             raise HTTPException(status_code=400, detail="Missing jobtitle in request")
             
-        # 파일명 생성 및 sanitize
+ 
         filename = sanitize_filename(job_code)
         filepath = os.path.join("/mnt/e/Linkareer_embedding_data/", f"{filename}.csv")
         reference_data = load_reference_data(filepath)
@@ -79,7 +76,7 @@ async def process_emp_requests(request: Request):
                 question = answer.get("question", "")
                 text = answer.get("answer", "")
                 
-                # 답변 길이 체크
+
                 if len(text.strip()) < 100:
                     results.append({
                         "relevance": 0,
@@ -89,7 +86,7 @@ async def process_emp_requests(request: Request):
                     })
                     continue
                 
-                # 길이가 충분한 경우 정상 처리
+  
                 formatted_answer = {
                     "question": question,
                     "text": text,
@@ -114,7 +111,6 @@ async def process_emp_requests(request: Request):
         return {"error": "요청 처리 중 오류가 발생했습니다"}
     
     finally:
-        # 임베딩 모델 정리
         EmbeddingProcessor().cleanup()
 
 @app.get("/gemma3")

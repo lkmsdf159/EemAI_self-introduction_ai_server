@@ -3,7 +3,6 @@ from transformers import AutoModel, AutoTokenizer
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import PromptTemplate
 from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field
 import numpy as np
 import logging
 import asyncio
@@ -19,30 +18,11 @@ os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 logger = logging.getLogger(__name__)
 
 
-
-class ComparisonPoint(BaseModel):
-    target_status: str = Field(description="평가 대상의 현재 상태", min_length=50)
-    reference_gap: str = Field(description="합격자 사례와의 구체적인 차이", min_length=50)
-    improvement: str = Field(description="개선을 위한 구체적 방안", min_length=50)
-
-class QualitativeAnalysis(BaseModel):
-    content_quality: ComparisonPoint = Field(description="내용의 질적 측면 비교")
-    specificity: ComparisonPoint = Field(description="구체성과 사례 제시 측면 비교")
-    persuasiveness: ComparisonPoint = Field(description="설득력과 논리성 측면 비교")
-
-class FeedbackResult(BaseModel):
-    relevance: int = Field(ge=1, le=10, description="질문과의 연관성 점수")
-    specificity: int = Field(ge=1, le=10, description="구체성 점수")
-    persuasiveness: int = Field(ge=1, le=10, description="설득력 점수")
-
-
-
-
 class EmbeddingProcessor:
     _instance = None
     _model = None
     _tokenizer = None
-    _batch_size = 128  # 배치 처리를 위한 크기 설정
+    _batch_size = 128  
 
     def __new__(cls):
         if cls._instance is None:
@@ -55,7 +35,7 @@ class EmbeddingProcessor:
         if self._model is None:
             try:
                 logger.info("임베딩 모델 초기화 시작")
-                model_name = "BM-K/KoSimCSE-roberta"  # 사용할 모델 이름
+                model_name = "BM-K/KoSimCSE-roberta"  
                 logger.info(f"사용할 모델: {model_name}")
                 self._model = AutoModel.from_pretrained(model_name)
                 self._tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -70,7 +50,7 @@ class EmbeddingProcessor:
                 raise
 
     def get_embedding(self, text: str) -> np.ndarray:
-        logger.debug(f"텍스트 임베딩 시작 (길이: {len(text)})")
+        
         if not hasattr(self, '_cache'):  
             self._cache = {}
         """입력 텍스트에 대한 임베딩을 반환합니다."""
@@ -119,30 +99,16 @@ class EmbeddingProcessor:
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        EmbeddingProcessor._instance = None  # 이 부분 추가
+        EmbeddingProcessor._instance = None  
 
-
-
-
-#- 10점: {job_code} 직군의 핵심 역량/경험이 잘 드러나며, 질문 의도를 정확히 파악하여 추가 인사이트까지 제공
-#- 8-9점: {job_code} 관련 내용이 대부분이며 질문의 핵심 요소를 포함하나, 일부 심화 내용 부족
-#- 6-7점: {job_code} 관련 내용이 있으나 직무 연관성이 다소 부족하고 질문 의도를 부분적으로만 이해
-#- 3-5점: {job_code} 관련 내용이 매우 적고 다른 직무 경험 위주로 서술됨
-#- 1-2점: {job_code}와 전혀 무관한 다른 직군의 경험만을 서술하거나 질문 의도를 전혀 파악하지 못함
-
-
-    
 
 
 class EnhancedJSONParser:
     @staticmethod
     def validate_and_parse(text: str) -> Optional[Dict[str, Any]]:
         try:
-            # 제어 문자 및 특수 문자 처리
             def clean_text(text):
-                # 제어 문자 제거
                 text = ''.join(char for char in text if ord(char) >= 32 or char in '\n\r\t')
-                # 이스케이프 처리
                 text = text.replace('\\', '\\\\')
                 text = text.replace('\n', ' ')
                 text = text.replace('\r', ' ') 
@@ -160,7 +126,10 @@ class EnhancedJSONParser:
                 text = text.replace('Relevance', ' ')
                 text = text.replace('Persuasiveness', ' ')
                 text = text.replace('Specificity', ' ')     
-                text = text.replace('n n 참고 사례 :', ' ')                             
+                text = text.replace('n n 참고 사례 :', ' ') 
+                text = text.replace('구체성 ( ) -', ' ')
+                text = text.replace('설득력 ( ) -', ' ')
+                text = text.replace('관련성 ( ) -', ' ')
                 text = ' '.join(text.split())
                 return text
 
@@ -180,7 +149,7 @@ class EnhancedJSONParser:
                 result = json.loads(text)
 
             # 나머지 검증 로직
-            required_fields = ['relevance', 'specificity', 'persuasiveness', 'feedback']
+            required_fields = ['relevance', 'specificity', 'persuasiveness', 'relevance평가', 'specificity평가', 'persuasiveness평가']
             for field in required_fields:
                 if field not in result:
                     raise ValueError(f"Missing required field: {field}")
@@ -188,18 +157,25 @@ class EnhancedJSONParser:
             score_fields = ['relevance', 'specificity', 'persuasiveness']
             for field in score_fields:
                 score = result[field]
-                if not (1 <= score <= 10):
-                    result[field] = 5
+                if not (1 <= score <= 100):
+                    result[field] = 0
                     
-            if 'feedback' in result:
-                result['feedback'] = clean_text(result['feedback'])
+            evaluation_fields = [
+                'relevance평가',
+                'specificity평가',
+                'persuasiveness평가',
+                'reference_analysis'
+            ]
             
-            if not result['feedback'] or len(result['feedback']) < 30:
-                result['feedback'] = "답변 내용을 분석했습니다. 더 구체적인 피드백이 필요합니다."
+            for field in evaluation_fields:
+                if field in result:
+                    result[field] = clean_text(result[field])                
             
             return result
-            
+
         except Exception as e:
+            logger.error(f"JSON 파싱 오류: {str(e)}")
+            logger.error(f"문제의 텍스트: {text}")
             return None
 
 
@@ -274,8 +250,9 @@ async def process_answer(answer: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug(f"질문 내용: {answer.get('question', '')[:100]}...")
         # Gemma 모델용 프롬프트 템플릿
         prompt = PromptTemplate.from_template("""[직무 맥락: {job_code}]
-당신은 {job_code} 직무에 대한 취업 자기소개서만을 평가하는 자기소개 전문가입니다.
-아래 평가 대상과 참고 사례비교 분석해서 평가대상 답변에 부족한점을 참고 사례의 예시를 들어서 출력은 꼭 feedback 영역 안에 다 출력해주세요. 
+당신은 {job_code} 직무에 대한 자기소개서만을 평가하는 자기소개 전문가입니다.
+아래 평가 대상과 참고 사례를 비교 분석하여 평가 대상 답변에 부족한 점을 참고 사례의 예시를 들어서 설명하세요.
+출력은 반드시 feedback 영역 안에 작성해주세요.
 
 [평가 대상]
 문항: {question}
@@ -284,35 +261,55 @@ async def process_answer(answer: Dict[str, Any]) -> Dict[str, Any]:
 [참고 사례]
 {similarity_context}
 
-[평가시 필수 고려사항]
-1. {job_code} 직군과 내용이 관계성이 있는지 판단
-2. 각 점수대별 명확한 근거 제시
-3. 참고 사례와의 구체적인 비교 분석 실천 가능한 개선 방향 제시 
-5. 각 점수는 유동적으로 판단해서 평가할 것.
+상세 평가 기준:
 
 [세부 평가 지표]
-Relevance (연관성) - 직무 적합성 및 질문 이해도:
-9-10점: {job_code} 직군에서 요구하는 핵심 역량이 구체적인 성과/수치와 함께 명확히 드러나고, 질문이 요구하는 모든 요소에 충실히 답변하며, 해당 분야의 추가적인 인사이트나 개선방안까지 제시함
-7-8점: {job_code} 직군 관련 경험과 역량이 구체적 사례와 함께 잘 표현되어 있고, 질문의 모든 요소에 충실히 답변함
-5-6점: {job_code} 직군과 관련된 내용이 포함되어 있고 기본적인 답변 요소를 갖추었으나, 일부 구체성이나 깊이가 부족함
-3-4점: {job_code} 직군과의 연관성이 부족하거나 질문의 핵심 요소에 대한 답변이 미흡함
-1-2점: {job_code} 직군이나 질문 의도와 맞지 않는 내용으로 구성됨
+1. Relevance (연관성) - 직무 적합성 및 질문 이해도:
+- [평가 대상]이 {job_code} 직무와 관련이 있을 경우: 직무 적합성과 질문 이해도를 모두 평가
+- [평가 대상]이 {job_code} 직무와 관련이 없을 경우: 질문 이해도만 평가하며, 직무 적합성은 감점 요소에서 제외
+
+점수 기준:
+- 90~100점: 직무와 관련된 핵심 역량이 명확히 드러나며, 질문의 의도를 완벽히 파악하여 추가적인 인사이트까지 제공
+- 80~89점: 직무와 관련성이 매우 높고, 질문 의도를 잘 반영함
+- 70~79점: 직무와 관련성이 높고, 질문 의도도 잘 반영되나 일부 보완이 필요함
+- 60~69점: 직무와 관련된 내용을 다루고 있으나, 구체성이 부족하고 추가 설명이 필요함
+- 50~59점: 직무와 일부 관련이 있으나 개선이 필요하고, 추상적 내용이 많음
+- 40~49점: 직무와 연관성이 다소 부족하고, 질문 의도와 관련성이 약함
+- 30~39점: 직무와의 연관성이 거의 없고, 설명이 매우 추상적임
+- 20~29점: 직무와의 연관성이 거의 없고, 질문의 핵심을 반영하지 않음
+- 10~19점: 직무와 무관한 내용만 서술하거나 질문 의도를 전혀 이해하지 못함
+- 0점: 직무와 전혀 무관하거나, 질문을 전혀 이해하지 못한 경우
+
+2. Specificity (구체성) - 경험과 실적의 구체화:
+- 90~100점: 구체적인 수치나 사례를 제시하며 모든 주장이 경험을 통해 뒷받침됨
+- 80~89점: 대체로 구체적인 사례가 있으며, 중요한 경험이 잘 드러남
+- 70~79점: 경험이 구체적으로 서술되었으나 일부 미비한 부분이 있음
+- 60~69점: 구체적인 사례는 있지만, 추가적인 설명이나 사례가 필요함
+- 50~59점: 구체적인 사례가 부족하고, 더 명확한 예시나 증거가 필요함
+- 40~49점: 추상적인 내용이 많고 구체적인 사례가 거의 없음
+- 30~39점: 대부분 추상적인 설명에 그침
+- 20~29점: 구체적인 사례나 수치가 거의 없음
+- 10~19점: 구체적인 내용이 전혀 없으며, 전반적으로 모호한 설명만 있음
+- 0점: 실제 경험이 없어 보이며 내용이 매우 부실함
+
+3. Persuasiveness (설득력) - 논리성과 차별성:
+- 90~100점: 논리적 흐름이 매우 명확하고, 독창적인 관점과 강력한 동기부여가 포함됨
+- 80~89점: 논리적인 구성이 잘 되어 있고, 차별화된 경험이 설득력 있게 전달됨
+- 70~79점: 기본적인 논리는 잘 갖추어져 있으나, 일부 보완이 필요함
+- 60~69점: 논리적인 흐름이 있지만 차별성이 부족하거나 설득력이 약함
+- 50~59점: 논리가 부족하고 설득력이 약함, 보강이 필요함
+- 40~49점: 논리적인 전개가 매끄럽지 않으며, 설득력이 낮음
+- 30~39점: 주장과 근거의 연결이 미약함
+- 20~29점: 논리적 흐름이 매우 부실하고 차별성이 없음
+- 10~19점: 설득력이 거의 없으며, 논리적 연결이 부족함
+- 0점: 논리적 흐름이 없거나, 내용이 부실하고 설득력이 전혀 없음
 
 
-Specificity (구체성) - 경험과 실적의 구체화:
-9-10점: 핵심 경험과 주장이 명확한 수치와 구체적 사례로 체계적으로 뒷받침됨
-7-8점: 주요 내용이 구체적인 경험과 성과로 잘 설명되어 있음
-5-6점: 기본적인 사례와 근거는 있으나 일부 구체성 보완이 필요함
-3-4점: 구체적 사례나 근거 제시가 부족하고 일반적인 서술에 그침
-1-2점: 구체적 경험이나 근거 없이 추상적인 내용으로만 구성됨
-
-
-Persuasiveness (설득력) - 논리성과 차별성:
-9-10점: 명확한 인과관계와 차별화된 관점으로 본인의 역량과 가치를 설득력 있게 전달
-7-8점: 논리적 구성이 잘 되어있고 개인의 강점이 효과적으로 드러남
-5-6점: 기본적인 논리는 갖추었으나 차별성이나 설득력이 다소 부족함
-3-4점: 논리 전개가 미흡하거나 진부한 내용이 많음
-1-2점: 논리적 흐름이 불명확하고 설득력이 현저히 부족함
+[평가 시 필수 고려사항]
+1. {job_code} 직군과 내용이 관계성이 있는지 판단
+2. 각 점수대별 명확한 근거 제시
+3. 참고 사례와의 구체적인 비교 분석
+4. 실천 가능한 개선 방향 제시
 
 합격자 자기소개서가 '없음'인 경우: 일반적인 자기소개서 작성 기준과 해당 질문의 의도에 맞춰 평가하고 피드백을 제시하세요.
 
@@ -321,25 +318,31 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
     "relevance": <점수>,
     "specificity": <점수>,
     "persuasiveness": <점수>,
-    "feedback": "참고 사례 대비 부족한 점, 참고사례에서 참고할점, 점수에 대한 구체적 근거, 건설적인 피드백 , 맞춤법 오류에 대한 피드백"
-   
+    "relevance평가": "<relevance 점수에 대한 근거, 건설적인 피드백, 맞춤법 오류에 대한 피드백>",
+    "specificity평가": "<specificity 점수에 대한 근거, 건설적인 피드백, 맞춤법 오류에 대한 피드백>",
+    "persuasiveness평가": "<persuasiveness 점수에 대한 근거, 건설적인 피드백, 맞춤법 오류에 대한 피드백>",
+    "reference_analysis": "<[참고 사례]와 [평가 대상]의 주요 차이점 및 [평가 대상]의 개선사항, 참고 사례가 '없음'인 경우 이 필드는 비워두세요.>"
 }}
 
 주의사항:
+- reference_analysis는 참고 사례가 있을 때만 작성하며 다음을 포함해야 합니다:
+   - 합격자 사례와의 핵심적인 차이점
+   - 합격자 사례에서 배울 수 있는 구체적인 요소들
+   - 실천 가능한 개선 방향
 - 반드시 [평가 대상]에 대해서만 평가
 - 피드백은 점수와 완전히 일관되어야 함
-- 단순 비판이 아닌 개선방향 제시
-- 전문적이고 객관적인 톤을 유지하며 점수 평가
-- 맞춤법 오류가 있으면 제시
-- 합격자의 자기소개서를 보고 평가대상의 자기소개서 개선점 제시
+- 단순 비판이 아닌 구체적인 개선 방향 제시
+- 전문적이고 객관적인 tone 유지
+- 맞춤법 피드백은 철자, 문장 구조의 기술적 측면에만 집중
+- 합격자의 자기소개서를 보고 평가 대상의 자기소개서를 구체화시킬 것
 - You must answer in korean"""
 )
 
 
-        # Gemma 모델 로드
+
         llm = ChatOllama(
             model="gemma2-2b-it:latest",
-            temperature=0.7,
+            temperature=0.9,
             top_p=0.9,
             max_tokens=500,
             timeout=30
@@ -347,6 +350,9 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
         
         chain = prompt | llm
         
+        
+        has_similar_profile = answer.get('similarity_context') != "없음"
+
         input_data = {
             "question": answer["question"],
             "text": answer["text"],
@@ -355,75 +361,122 @@ JSON 형식으로만 평가하세요. Markdown이나 다른 형식을 포함하�
         }
         
         
-        max_attempts = 3
+        max_attempts = 4
         for attempt in range(max_attempts):
             try:
                 logger.info(f"답변 생성 시도 {attempt + 1}/{max_attempts}")
+
                 response = await chain.ainvoke(input_data)           
 
                 result_text = response.content if hasattr(response, 'content') else str(response)               
 
                 result = EnhancedJSONParser.validate_and_parse(result_text)
                 
+                logger.debug(f"응답 텍스트: {result_text}")
+
                 if result:
-                    logger.info("답변 처리 성공")
-                    return result                
+                    if not has_similar_profile and 'reference_analysis' in result:
+                        del result['reference_analysis']
+                
+                    if has_similar_profile:
+                        if not result.get('reference_analysis'):
+                            logger.warning("유사 자소서가 있지만 reference_analysis가 없음")
+                            continue  
+                        
+                        if len(result['reference_analysis']) < 80: 
+                            logger.warning("reference_analysis가 너무 짧음")
+                            continue  
+                    
+                    return result
+
+                logger.warning(f"JSON 검증 실패 (시도 {attempt + 1})")
+
             except Exception as e:
                 logger.error(f"평가 처리 오류 (시도 {attempt + 1}): {str(e)}")
         
         # 기본 평가 결과 반환
         return {
-            "relevance": 5,
-            "specificity": 5,
-            "persuasiveness": 5,
-            "feedback": "답변 평가 중 문제가 발생했습니다. 다시 시도해주세요."
+            "relevance": 0,
+            "specificity": 0,
+            "persuasiveness": 0,
+            "relevance평가": "답변 평가 중 문제가 발생했습니다. 다시 시도해주세요.",
+            "specificity평가": "답변 평가 중 문제가 발생했습니다. 다시 시도해주세요.",
+            "persuasiveness평가": "답변 평가 중 문제가 발생했습니다. 다시 시도해주세요."
         }
     
     except Exception as e:
         return {
-            "relevance": 5,
-            "specificity": 5,
-            "persuasiveness": 5,
-            "feedback": "시스템 오류가 발생했습니다."
+            "relevance": 0,
+            "specificity": 0,
+            "persuasiveness": 0,
+            "relevance평가": "시스템 오류가 발생했습니다.",
+            "specificity평가": "시스템 오류가 발생했습니다.",
+            "persuasiveness평가": "시스템 오류가 발생했습니다."
         }
 
         
 
 async def find_similar_profile(question: str, text: str, reference_data: List[Dict[str, Any]], threshold: float = 80.0) -> tuple:
-   logger.info("유사 프로필 검색 시작")
-   logger.debug(f"참조 데이터 수: {len(reference_data)}") 
-   processor = EmbeddingProcessor()
-   
-   question_embedding = processor.get_embedding(question)
-   text_embedding = processor.get_embedding(text)
-   
-   max_similarity = -1
-   best_profile = None
+    logger.info("유사 프로필 검색 시작")
+    logger.debug(f"참조 데이터 수: {len(reference_data)}") 
+    processor = EmbeddingProcessor()
+    
+    def check_free_format(text: str) -> bool:
+        patterns = [
+            r'자유\s*형식',  
+            r'자유\s*양식', 
+            r'<.*?자유.*?형식.*?>', 
+            r'<.*?자유.*?양식.*?>', 
+            r'\d+\.*\s*자유\s*형식', 
+            r'\d+\.*\s*자유\s*양식',  
+            r'\[.*?자유.*?형식.*?\]',  
+            r'\[.*?자유.*?양식.*?\]',  
+            r'「.*?자유.*?형식.*?」', 
+            r'「.*?자유.*?양식.*?」' 
+        ]
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+    
+    has_free_format = check_free_format(question)
+    
+    if has_free_format:
+        reference_data = [data for data in reference_data if check_free_format(data['quest'])]
+        logger.info(f"자유형식/양식 질문 필터링 후 데이터 수: {len(reference_data)}")
+    
+    question_embedding = processor.get_embedding(question)
+    text_embedding = processor.get_embedding(text)
+    
+    max_similarity = -1
+    best_profile = None
 
-   logger.info("유사도 비교 시작")
-   for profile in reference_data:
-       ref_q_embed = processor.get_embedding(profile['quest']) 
-       ref_t_embed = processor.get_embedding(profile['text'])
+    logger.info("유사도 비교 시작")
+    for profile in reference_data:
+        ref_q_embed = processor.get_embedding(profile['quest']) 
+        ref_t_embed = processor.get_embedding(profile['text'])
 
-       def cosine_similarity(a, b):
-           if len(a.shape) == 1: a = a.unsqueeze(0)
-           if len(b.shape) == 1: b = b.unsqueeze(0)
-           
-           a_norm = a / a.norm(dim=1)[:, None]
-           b_norm = b / b.norm(dim=1)[:, None]
-           return float(torch.mm(a_norm, b_norm.transpose(0, 1)) * 100)
+        def cosine_similarity(a, b):
+            if len(a.shape) == 1: a = a.unsqueeze(0)
+            if len(b.shape) == 1: b = b.unsqueeze(0)
+            
+            a_norm = a / a.norm(dim=1)[:, None]
+            b_norm = b / b.norm(dim=1)[:, None]
+            return float(torch.mm(a_norm, b_norm.transpose(0, 1)) * 100)
 
-       combined_sim = (
-           0.4 * cosine_similarity(torch.tensor(question_embedding), torch.tensor(ref_q_embed)) +
-           0.6 * cosine_similarity(torch.tensor(text_embedding), torch.tensor(ref_t_embed))
-       )
-       
-       if combined_sim > max_similarity:
-           max_similarity = combined_sim
-           best_profile = profile
+        if has_free_format:
+            combined_sim = cosine_similarity(torch.tensor(text_embedding), torch.tensor(ref_t_embed))
+        else:
+            combined_sim = (
+                0.4 * cosine_similarity(torch.tensor(question_embedding), torch.tensor(ref_q_embed)) +
+                0.6 * cosine_similarity(torch.tensor(text_embedding), torch.tensor(ref_t_embed))
+            )
+        
+        if combined_sim > max_similarity:
+            max_similarity = combined_sim
+            best_profile = profile
 
-   logger.info(f"유사 프로필 검색 완료 (최고 유사도: {max_similarity:.2f})")
-   return (best_profile, max_similarity) if max_similarity >= threshold else (None, 0.0)
+    logger.info(f"유사 프로필 검색 완료 (최고 유사도: {max_similarity:.2f})")
+
+    effective_threshold = threshold * 0.9 if has_free_format else threshold
+    return (best_profile, max_similarity) if max_similarity >= effective_threshold else (None, 0.0)
 
 
 
@@ -437,9 +490,7 @@ async def process_gemma_answer(answer: Dict[str, Any],  job_code: str, reference
                 answer["question"], 
                 answer["text"], 
                 reference_data
-            )
-
-            
+            )            
             
             answer['similarity_context'] = profile['pass_answer'] if profile else "없음"
             answer['similar_profile'] = profile
@@ -470,12 +521,16 @@ async def process_gemma_answer(answer: Dict[str, Any],  job_code: str, reference
         
         except Exception as e:
             return {
-                "relevance": 5,
-                "specificity": 5,
-                "persuasiveness": 5,
-                "feedback": "시스템 오류 발생",
+                "relevance": 0,
+                "specificity": 0,
+                "persuasiveness": 0,
+                "relevance평가": "문제가 발생했습니다. 다시 시도해주세요.",
+                "specificity평가": "문제가 발생했습니다. 다시 시도해주세요.",
+                "persuasiveness평가": "문제가 발생했습니다. 다시 시도해주세요.",
+                "reference_analysis": "",
                 "similar_h2_tag": "",
                 "similar_question": "",
                 "similar_answer": "",
                 "similarity": 0.0
             }
+            
